@@ -8,30 +8,31 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 )
 
 const (
-	// alphanumeric characters for random filename (lowercase only)
-	alphanumeric = "abcdefghijklmnopqrstuvwxyz0123456789"
+	// alphanumeric characters for random strings (now including uppercase)
+	alphanumeric = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 	filenameLen  = 12
+	boundaryLen  = 24
 	lineWidth    = 76 // RFC 2045: MIME base64 lines should not exceed 76 characters
 	crlf         = "\r\n"
+	dashes       = "--------------" // Exactly 14 dashes
 )
 
-// generateRandomFilename creates a random 12-character alphanumeric filename with extension
-func generateRandomFilename(extension string) (string, error) {
-	bytes := make([]byte, filenameLen)
+// generateRandomString creates a random n-character alphanumeric string
+func generateRandomString(n int) (string, error) {
+	bytes := make([]byte, n)
 	_, err := rand.Read(bytes)
 	if err != nil {
 		return "", err
 	}
 
-	for i := 0; i < filenameLen; i++ {
+	for i := 0; i < n; i++ {
 		bytes[i] = alphanumeric[int(bytes[i])%len(alphanumeric)]
 	}
 
-	return string(bytes) + extension, nil
+	return string(bytes), nil
 }
 
 // lineBreaker wraps an io.Writer and inserts CRLF every lineWidth characters
@@ -131,12 +132,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Generate random filename
-	filename, err := generateRandomFilename(extension)
+	// Generate random strings for boundary and filename
+	boundarySuffix, err := generateRandomString(boundaryLen)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating boundary: %v\r\n", err)
+		os.Exit(1)
+	}
+
+	// Complete boundary = 14 dashes + random string
+	fullBoundary := dashes + boundarySuffix
+
+	filename, err := generateRandomString(filenameLen)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating filename: %v\r\n", err)
 		os.Exit(1)
 	}
+
+	fullFilename := filename + extension
 
 	// Write headers and encoded data to stdout
 	writer := bufio.NewWriter(os.Stdout)
@@ -161,26 +173,60 @@ func main() {
 		writer.WriteString(crlf)
 	}
 
-	// Required MIME headers
+	// Multipart MIME headers
 	writer.WriteString("MIME-Version: 1.0")
 	writer.WriteString(crlf)
 	
+	writer.WriteString("Content-Type: multipart/mixed; boundary=\"")
+	writer.WriteString(fullBoundary)
+	writer.WriteString("\"")
+	writer.WriteString(crlf)
+	
+	// Blank line separating headers and body
+	writer.WriteString(crlf)
+
+	// Multipart message body
+	writer.WriteString("This is a multi-part message in MIME format.")
+	writer.WriteString(crlf)
+	
+	// First boundary (text part) - with 14 dashes
+	writer.WriteString(fullBoundary)
+	writer.WriteString(crlf)
+	
+	// Text part headers
+	writer.WriteString("Content-Type: text/plain; charset=UTF-8; format=flowed")
+	writer.WriteString(crlf)
+	writer.WriteString("Content-Transfer-Encoding: 7bit")
+	writer.WriteString(crlf)
+	
+	// Blank line before text content
+	writer.WriteString(crlf)
+	
+	// Text content with placeholder
+	writer.WriteString("(Your message goes here.)")
+	writer.WriteString(crlf)
+	
+	// Second boundary (image part) - with 14 dashes
+	writer.WriteString(fullBoundary)
+	writer.WriteString(crlf)
+	
+	// Image part headers
 	writer.WriteString("Content-Type: ")
 	writer.WriteString(contentType)
+	writer.WriteString("; name=\"")
+	writer.WriteString(fullFilename)
+	writer.WriteString("\"")
+	writer.WriteString(crlf)
+	
+	writer.WriteString("Content-Disposition: attachment; filename=\"")
+	writer.WriteString(fullFilename)
+	writer.WriteString("\"")
 	writer.WriteString(crlf)
 	
 	writer.WriteString("Content-Transfer-Encoding: base64")
 	writer.WriteString(crlf)
 	
-	writer.WriteString("Content-Description: ")
-	writer.WriteString(strings.TrimSuffix(filename, extension))
-	writer.WriteString(crlf)
-	
-	writer.WriteString("Content-Disposition: inline; filename=")
-	writer.WriteString(filename)
-	writer.WriteString(crlf)
-
-	// Blank line separating headers and body (RFC requirement)
+	// Blank line before base64 data
 	writer.WriteString(crlf)
 
 	// Encode image data to base64 with line wrapping
@@ -192,6 +238,9 @@ func main() {
 	}
 	encoder.Close()
 
-	// Final CRLF to end the message
+	// Final boundary to end the multipart message - with 14 dashes and two extra dashes
+	writer.WriteString(crlf)
+	writer.WriteString(fullBoundary)
+	writer.WriteString("--")
 	writer.WriteString(crlf)
 }
